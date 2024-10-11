@@ -11,7 +11,7 @@ use serde_json::Value as JsonValue;
 use serde_yaml_ng::Value as YamlValue;
 use toml::Value as TomlValue;
 
-use tide::{convert::json, utils::After, Error, Request, Response};
+use tide::{utils::After, Error, Request, Response};
 use tide_tracing::TraceMiddleware;
 
 #[derive(Deserialize)]
@@ -45,14 +45,14 @@ impl Language {
 
 pub struct HclConverter<'c> {
     data: String,
-    language: Option<String>,
+    export: Option<String>,
     ctx: Rc<RefCell<Context<'c>>>,
 }
 
 impl<'c> HclConverter<'c> {
     pub fn new(input: &str) -> Result<Self, Error> {
         let default = Self {
-            language: None,
+            export: None,
             data: input.to_owned(),
             ctx: Rc::new(RefCell::new(Context::new())),
         };
@@ -77,10 +77,24 @@ impl<'c> HclConverter<'c> {
     }
 
     pub fn fetch_meta(&mut self) -> Result<(), Error> {
-        if let Some(obj) = self.eval()?.as_object() {
-            self.language = obj.get("meta_language").and_then(|m| if let hcl::Value::String(s) = m { Some(s.clone()) } else { None });
+        let value: hcl::Value = hcl::from_str(&self.data)?;
+        let obj = value.as_object().ok_or(Error::from_str(500, "Invalid meta object"))?;
+        let meta = obj.get("meta").and_then(|m| m.as_object()).ok_or(Error::from_str(404, "Missing meta object"))?;
+
+        match meta.get("kind").and_then(|k| k.as_str()) {
+            Some("docker") => {
+                if let Some(services) = obj.get("services").and_then(hcl::Value::as_object) {
+                    self.declare("services", services.keys().cloned().collect::<hcl::Value>());
+                }
+            }
+            _ => {}
         }
-        Ok(())
+
+        for (key, value) in meta {
+            self.declare(key.as_str(), value.as_str().unwrap_or_default());
+        }
+
+        Ok(self.export = meta.get("export").and_then(|m| m.as_str()).map(|s| s.to_string()))
     }
 
     pub fn toml(&self) -> Result<String, Error> {
@@ -109,7 +123,7 @@ impl<'c> HclConverter<'c> {
         let mut value = self.eval()?;
 
         if let hcl::Value::Object(obj) = &mut value {
-            obj.shift_remove("meta_language");
+            obj.shift_remove("meta");
         }
 
         Ok(value)
@@ -185,7 +199,7 @@ impl<'c> HclConverter<'c> {
     }
 }
 
-async fn test(req: Request<models::Config>) -> tide::Result<String> {
+async fn compile(req: Request<models::Config>) -> tide::Result<String> {
     let params: Params = req.query()?;
     let base = &req.state().settings.storage;
     let file = req.param("path").unwrap_or_default();
@@ -195,16 +209,16 @@ async fn test(req: Request<models::Config>) -> tide::Result<String> {
         Err(_) => HclConverter::read(base.join(file).join("index.hcl"))?,
     };
 
-    hcl.declare("domain", "themackabu.dev");
+    hcl.declare("engine.version", env!("CARGO_PKG_VERSION"));
     hcl.fetch_meta()?;
 
-    let lang = params.lang.unwrap_or(hcl.language.to_owned().unwrap_or_default());
+    let lang = params.lang.unwrap_or(hcl.export.to_owned().unwrap_or_default());
 
     let data = match Language::parse(&lang) {
         Language::TOML => hcl.toml(),
         Language::JSON => hcl.json(),
         Language::YAML => hcl.yaml(),
-        Language::None => return Err(tide::Error::from_str(400, "language not found")),
+        Language::None => return Err(Error::from_str(400, "Language not found")),
     };
 
     Ok(data?)
@@ -224,12 +238,12 @@ async fn main() -> tide::Result<()> {
             let status = error.status();
 
             res.set_status(status);
-            res.set_body(json!({ "code": status, "error": error.to_string() }));
+            res.set_body(format!("(message)\n{error}\n\n(error)\n{status}\n"));
         }
         Ok(res)
     }));
 
-    app.at("/get/*path").get(test);
+    app.at("/*path").get(compile);
     app.listen(config.settings.listen).await?;
 
     Ok(())
