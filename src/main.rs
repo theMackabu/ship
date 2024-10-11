@@ -45,6 +45,7 @@ impl Language {
 
 pub struct HclConverter<'c> {
     data: String,
+    file: Option<String>,
     export: Option<String>,
     ctx: Rc<RefCell<Context<'c>>>,
 }
@@ -52,6 +53,7 @@ pub struct HclConverter<'c> {
 impl<'c> HclConverter<'c> {
     pub fn new(input: &str) -> Result<Self, Error> {
         let default = Self {
+            file: None,
             export: None,
             data: input.to_owned(),
             ctx: Rc::new(RefCell::new(Context::new())),
@@ -79,7 +81,9 @@ impl<'c> HclConverter<'c> {
     pub fn fetch_meta(&mut self) -> Result<(), Error> {
         let value: hcl::Value = hcl::from_str(&self.data)?;
         let obj = value.as_object().ok_or(Error::from_str(500, "Invalid meta object"))?;
+
         let meta = obj.get("meta").and_then(|m| m.as_object()).ok_or(Error::from_str(404, "Missing meta object"))?;
+        let file = meta.get("file").and_then(|m| m.as_str()).map(|s| s.to_string());
 
         match meta.get("kind").and_then(|k| k.as_str()) {
             Some("docker") => {
@@ -94,7 +98,17 @@ impl<'c> HclConverter<'c> {
             self.declare(key.as_str(), value.as_str().unwrap_or_default());
         }
 
-        Ok(self.export = meta.get("export").and_then(|m| m.as_str()).map(|s| s.to_string()))
+        if let Some(path) = file {
+            let (name, extension) = match path.rsplit_once('.') {
+                Some((name, ext)) => (name.to_string(), Some(ext.to_string())),
+                None => (path, meta.get("export").and_then(|m| m.as_str()).map(|s| s.to_string())),
+            };
+
+            self.file = Some(name);
+            self.export = extension;
+        }
+
+        Ok(())
     }
 
     pub fn toml(&self) -> Result<String, Error> {
@@ -199,7 +213,9 @@ impl<'c> HclConverter<'c> {
     }
 }
 
-async fn compile(req: Request<models::Config>) -> tide::Result<String> {
+async fn compile(req: Request<models::Config>) -> tide::Result {
+    let mut res = Response::new(200);
+
     let params: Params = req.query()?;
     let base = &req.state().settings.storage;
     let file = req.param("path").unwrap_or_default();
@@ -213,15 +229,19 @@ async fn compile(req: Request<models::Config>) -> tide::Result<String> {
     hcl.fetch_meta()?;
 
     let lang = params.lang.unwrap_or(hcl.export.to_owned().unwrap_or_default());
+    let file = hcl.file.to_owned().unwrap_or(file.rsplit_once('.').map(|(name, _)| name).unwrap_or(file).to_owned());
 
-    let data = match Language::parse(&lang) {
-        Language::TOML => hcl.toml(),
-        Language::JSON => hcl.json(),
-        Language::YAML => hcl.yaml(),
+    let (data, ext) = match Language::parse(&lang) {
+        Language::TOML => (hcl.toml(), "toml"),
+        Language::JSON => (hcl.json(), "json"),
+        Language::YAML => (hcl.yaml(), "yml"),
         Language::None => return Err(Error::from_str(400, "Language not found")),
     };
 
-    Ok(data?)
+    res.set_body(data?);
+    res.insert_header("Content-Disposition", format!(r#"attachment; filename="{file}.{ext}""#));
+
+    Ok(res)
 }
 
 #[async_std::main]
