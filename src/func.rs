@@ -287,11 +287,6 @@ pub fn vault_kv(args: FuncArgs) -> Result<hcl::Value, String> {
                         None => return Ok(data.to_owned()),
                     };
 
-                    let key = match key_value.as_str() {
-                        Some(key) => key,
-                        None => return Ok(data.to_owned()),
-                    };
-
                     let values = match data.as_object() {
                         Some(values) => values.get("data"),
                         None => return Ok(data.to_owned()),
@@ -300,6 +295,11 @@ pub fn vault_kv(args: FuncArgs) -> Result<hcl::Value, String> {
                     let secret_map = match values {
                         Some(secret) => secret.as_object(),
                         None => return Ok(data.to_owned()),
+                    };
+
+                    let key = match key_value.as_str() {
+                        Some(key) => key,
+                        None => return Ok(hcl::Value::Object(secret_map.expect("Expected valid early returns").to_owned())),
                     };
 
                     let secret = match secret_map {
@@ -311,7 +311,7 @@ pub fn vault_kv(args: FuncArgs) -> Result<hcl::Value, String> {
                         return Ok(val.to_owned());
                     }
 
-                    Ok(hcl::Value::Object(secret_map.expect("Expected valid early returns").to_owned()))
+                    Ok(data.to_owned())
                 }
                 None => Err("Unable to decode json".to_string()),
             },
