@@ -4,7 +4,7 @@ mod models;
 use std::{cell::RefCell, fs, path::PathBuf, rc::Rc, str::FromStr};
 
 use hcl::eval::{Context, Evaluate};
-use hcl::Template;
+use hcl::{Block, Template};
 
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
@@ -78,9 +78,21 @@ impl<'c> HclConverter<'c> {
         self.ctx.borrow_mut().declare_var(name.into(), value.into());
     }
 
+    pub fn fetch_env(&mut self) -> Result<(), Error> {
+        let value: hcl::Value = hcl::from_str(&self.data)?;
+        let obj = value.as_object().ok_or(Error::from_str(500, "Invalid root object"))?;
+        let env = obj.get("env").and_then(|m| m.as_object());
+
+        if let Some(env) = env {
+            self.declare("env", env.to_owned());
+        }
+
+        Ok(())
+    }
+
     pub fn fetch_meta(&mut self) -> Result<(), Error> {
         let value: hcl::Value = hcl::from_str(&self.data)?;
-        let obj = value.as_object().ok_or(Error::from_str(500, "Invalid meta object"))?;
+        let obj = value.as_object().ok_or(Error::from_str(500, "Invalid root object"))?;
 
         let meta = obj.get("meta").and_then(|m| m.as_object()).ok_or(Error::from_str(404, "Missing meta object"))?;
         let file = meta.get("file").and_then(|m| m.as_str()).map(|s| s.to_string());
@@ -95,7 +107,7 @@ impl<'c> HclConverter<'c> {
         }
 
         for (key, value) in meta {
-            self.declare(key.as_str(), value.as_str().unwrap_or_default());
+            self.declare(key.as_str(), value.to_owned());
         }
 
         if let Some(path) = file {
@@ -225,8 +237,12 @@ async fn compile(req: Request<models::Config>) -> tide::Result {
         Err(_) => HclConverter::read(base.join(file).join("index.hcl"))?,
     };
 
-    hcl.declare("engine.version", env!("CARGO_PKG_VERSION"));
+    let version = Block::builder("version").add_attribute(("syntax", "v1")).add_attribute(("pkg", env!("CARGO_PKG_VERSION"))).build();
+
+    hcl.fetch_env()?;
     hcl.fetch_meta()?;
+
+    hcl.declare("engine", version);
 
     let lang = params.lang.unwrap_or(hcl.export.to_owned().unwrap_or_default());
     let file = hcl.file.to_owned().unwrap_or(file.rsplit_once('.').map(|(name, _)| name).unwrap_or(file).to_owned());
