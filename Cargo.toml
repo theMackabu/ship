@@ -26,6 +26,6 @@ serde_yaml_ng = "0.10.0"
 
 uuid = { version = "1.11.0", features = ["v5"] }
 serde = { version = "1.0.210", features = ["derive"] }
-reqwest = { version = "0.12.9", features = ["blocking"] }
 async-std = { version = "1.13.0", features = ["attributes"] }
 tracing-subscriber = { version = "0.3.18", features = ["json"] }
+reqwest = { version = "0.12.9", features = ["blocking", "json"] }

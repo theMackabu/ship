@@ -1,8 +1,10 @@
+#![recursion_limit = "256"]
+
 mod config;
 mod func;
 mod models;
 
-use macros_rs::obj::lazy_lock;
+use macros_rs::{fmt::str, obj::lazy_lock};
 use std::{cell::RefCell, fs, path::PathBuf, rc::Rc, str::FromStr};
 
 use hcl::eval::{Context, FuncDef, ParamType};
@@ -94,10 +96,11 @@ lazy_lock! {
     static FN_FLATTEN: FuncDef = FuncDef::builder().param(ParamType::Array(Box::new(ParamType::Any))).build(func::flatten);
     static FN_MERGE: FuncDef = FuncDef::builder().variadic_param(ParamType::Object(Box::new(ParamType::Any))).build(func::merge);
     static FN_FILE: FuncDef = FuncDef::builder().param(ParamType::String).build(func::file);
-    static FN_HTTP_GET: FuncDef = FuncDef::builder().param(ParamType::String).build(func::http_get);
-    static FN_HTTP_POST: FuncDef = FuncDef::builder().param(ParamType::String).param(ParamType::String).build(func::http_post);
-    static FN_HTTP_POST_JSON: FuncDef = FuncDef::builder().param(ParamType::String).param(ParamType::Any).build(func::http_post_json);
-    static FN_HTTP_PUT: FuncDef = FuncDef::builder().param(ParamType::String).param(ParamType::String).build(func::http_put);
+    static FN_HTTP_GET: FuncDef = FuncDef::builder().param(ParamType::String).variadic_param(ParamType::Any).build(func::http_get);
+    static FN_VAULT_GET: FuncDef = FuncDef::builder().param(ParamType::String).build(func::vault_kv);
+    static FN_HTTP_POST: FuncDef = FuncDef::builder().param(ParamType::String).param(ParamType::String).variadic_param(ParamType::Any).build(func::http_post);
+    static FN_HTTP_POST_JSON: FuncDef = FuncDef::builder().param(ParamType::String).param(ParamType::Any).variadic_param(ParamType::Any).build(func::http_post_json);
+    static FN_HTTP_PUT: FuncDef = FuncDef::builder().param(ParamType::String).param(ParamType::String).variadic_param(ParamType::Any).build(func::http_put);
     static FN_TRIMSPACE: FuncDef = FuncDef::builder().param(ParamType::String).build(func::trimspace);
     static FN_TRIM: FuncDef = FuncDef::builder().param(ParamType::String).param(ParamType::String).build(func::trim);
     static FN_TRIMPREFIX: FuncDef = FuncDef::builder().param(ParamType::String).param(ParamType::String).build(func::trimprefix);
@@ -183,6 +186,7 @@ impl<'c> HclConverter<'c> {
 
         declare_fns!(default.ctx,
             FN_HTTP_GET => name!("http", "get"),
+            FN_VAULT_GET => name!("secret", "kv"),
             FN_HTTP_POST => name!("http", "post"),
             FN_HTTP_POST_JSON => name!("http", "post_json"),
             FN_HTTP_PUT => name!("http", "put")
@@ -219,6 +223,14 @@ impl<'c> HclConverter<'c> {
         );
 
         declare_fns!(default.ctx,
+           FN_VEC => "list",
+           FN_VEC => "tuple",
+           FN_TOSET => "set",
+           FN_TOSTRING => "string",
+           FN_TONUMBER => "number"
+        );
+
+        declare_fns!(default.ctx,
            FN_BASE64ENCODE => name!("encode", "base64"),
            FN_BASE64DECODE => name!("decode", "base64"),
            FN_JSONENCODE => name!("encode", "json"),
@@ -227,12 +239,6 @@ impl<'c> HclConverter<'c> {
            FN_URLDECODE => name!("decode", "url"),
            FN_YAMLENCODE => name!("encode", "yaml"),
            FN_YAMLDECODE => name!("decode", "yaml")
-        );
-
-        declare_fns!(default.ctx,
-           FN_TOSTRING => name!("to", "string"),
-           FN_TONUMBER => name!("to", "number"),
-           FN_TOSET => name!("to", "set")
         );
 
         declare_fns!(default.ctx,
@@ -264,16 +270,62 @@ impl<'c> HclConverter<'c> {
     pub fn fetch_locals(&mut self) -> Result<(), Error> {
         let value: hcl::Value = hcl::from_str(&self.data)?;
         let obj = value.as_object().ok_or(Error::from_str(500, "Invalid root object"))?;
-
         let locals = obj.get("locals").and_then(|m| m.as_object());
-        let env = obj.get("env").and_then(|m| m.as_object());
 
         if let Some(locals) = locals {
             self.declare("local", locals.to_owned());
         }
 
-        if let Some(env) = env {
-            self.declare("env", env.to_owned());
+        let var = obj.get("var").and_then(|m| m.as_object());
+        let vars = obj.get("vars").and_then(|m| m.as_object());
+        let let_block = obj.get("let").and_then(|m| m.as_object());
+        let const_block = obj.get("const").and_then(|m| m.as_object());
+
+        let mut combined = hcl::Map::new();
+
+        if let Some(const_map) = const_block {
+            combined.extend(const_map.to_owned());
+        }
+
+        let check_const_conflicts = |map: &hcl::Map<String, hcl::Value>, block_name: &str| -> Result<(), Error> {
+            if let Some(const_map) = const_block {
+                let conflicting_keys: Vec<String> = map.keys().filter(|k| const_map.contains_key(*k)).map(|k| k.to_string()).collect();
+
+                let err_msg = format!("Cannot override const values in '{}' block for keys: {}", block_name, conflicting_keys.join(", "));
+
+                if !conflicting_keys.is_empty() {
+                    return Err(Error::from_str(500, str!(err_msg)));
+                }
+            }
+            Ok(())
+        };
+
+        if let Some(var_map) = var {
+            check_const_conflicts(var_map, "var")?;
+            combined.extend(var_map.to_owned());
+        }
+
+        if let Some(let_map) = let_block {
+            check_const_conflicts(let_map, "let")?;
+            combined.extend(let_map.to_owned());
+        }
+
+        if let Some(vars_map) = vars {
+            check_const_conflicts(vars_map, "vars")?;
+
+            let conflicting_keys: Vec<String> = vars_map.keys().filter(|k| combined.contains_key(*k)).map(|k| k.to_string()).collect();
+
+            let err_msg = format!("Conflicting variables in 'vars' block for keys: {}", conflicting_keys.join(", "));
+
+            if !conflicting_keys.is_empty() {
+                return Err(Error::from_str(500, str!(err_msg)));
+            }
+
+            combined.extend(vars_map.to_owned());
+        }
+
+        if !combined.is_empty() {
+            self.declare("var", combined);
         }
 
         Ok(())
@@ -330,8 +382,11 @@ impl<'c> HclConverter<'c> {
 
         if let hcl::Value::Object(obj) = &mut value {
             obj.shift_remove("locals");
-            obj.shift_remove("env");
             obj.shift_remove("meta");
+            obj.shift_remove("const");
+            obj.shift_remove("let");
+            obj.shift_remove("var");
+            obj.shift_remove("vars");
         }
 
         Ok(value)
@@ -423,6 +478,13 @@ async fn compile(req: Request<models::Config>) -> tide::Result {
 
     hcl.fetch_locals()?;
     hcl.fetch_meta()?;
+
+    hcl.declare("boolean", true);
+    hcl.declare("number", 0);
+    hcl.declare("string", "");
+    hcl.declare("null", hcl::Value::Null);
+    hcl.declare("object", hcl::Map::new());
+    hcl.declare::<&str, Vec<String>>("array", vec![]);
 
     hcl.declare("engine", version);
 

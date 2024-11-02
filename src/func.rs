@@ -7,6 +7,7 @@ use std::str::FromStr;
 use chrono::{Duration, TimeZone, Utc};
 use ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
 use md5::{Digest, Md5};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use sha1::Sha1;
 use sha2::{Sha256, Sha512};
 use uuid::Uuid;
@@ -17,6 +18,27 @@ use urlencoding::{decode as url_decode, encode as url_encode};
 
 use serde_json::{from_str as from_json_str, to_string as to_json_string, Value as JsonValue};
 use serde_yaml_ng::{from_str as from_yaml_str, to_string as to_yaml_string};
+
+fn parse_headers(headers_arg: &Option<&hcl::Value>) -> Option<HeaderMap> {
+    match headers_arg {
+        Some(headers_value) => {
+            if let Some(headers_map) = headers_value.as_object() {
+                let mut header_map = HeaderMap::new();
+
+                for (key, value) in headers_map {
+                    if let (Ok(header_name), Ok(header_value)) = (HeaderName::from_bytes(key.as_bytes()), HeaderValue::from_str(value.as_str().unwrap_or_default())) {
+                        header_map.insert(header_name, header_value);
+                    }
+                }
+
+                Some(header_map)
+            } else {
+                None
+            }
+        }
+        None => None,
+    }
+}
 
 pub fn concat(args: FuncArgs) -> Result<hcl::Value, String> {
     let concatenated = args.iter().map(|arg| arg.as_str().unwrap()).collect::<Vec<&str>>().join("");
@@ -219,11 +241,39 @@ pub fn file(args: FuncArgs) -> Result<hcl::Value, String> {
 
 pub fn http_get(args: FuncArgs) -> Result<hcl::Value, String> {
     let url = args[0].as_str().unwrap();
-    let client = reqwest::blocking::Client::new();
+    let headers = parse_headers(&args.get(1));
 
-    match client.get(url).send() {
+    let client = reqwest::blocking::Client::new();
+    let mut request = client.get(url);
+
+    if let Some(headers) = headers {
+        request = request.headers(headers);
+    }
+
+    match request.send() {
         Ok(response) => match response.text() {
             Ok(text) => Ok(hcl::Value::String(text)),
+            Err(e) => Err(format!("Failed to read response: {}", e)),
+        },
+        Err(e) => Err(format!("HTTP GET request failed: {}", e)),
+    }
+}
+
+pub fn vault_kv(args: FuncArgs) -> Result<hcl::Value, String> {
+    let config = crate::config::read();
+    let value = args[0].as_str().unwrap();
+
+    let client = reqwest::blocking::Client::new();
+    let request = client
+        .get(format!("{}/v1/kv/data/{value}", config.settings.vault_url))
+        .header("X-Vault-Token", config.settings.vault_token);
+
+    match request.send() {
+        Ok(response) => match response.json::<hcl::Object<String, hcl::Value>>() {
+            Ok(json) => match json.get("data") {
+                Some(data) => Ok(data.to_owned()),
+                None => Err("Unable to decode json".to_string()),
+            },
             Err(e) => Err(format!("Failed to read response: {}", e)),
         },
         Err(e) => Err(format!("HTTP GET request failed: {}", e)),
@@ -233,9 +283,16 @@ pub fn http_get(args: FuncArgs) -> Result<hcl::Value, String> {
 pub fn http_post(args: FuncArgs) -> Result<hcl::Value, String> {
     let url = args[0].as_str().unwrap();
     let body = args[1].as_str().unwrap();
-    let client = reqwest::blocking::Client::new();
+    let headers = parse_headers(&args.get(2));
 
-    match client.post(url).body(body.to_string()).send() {
+    let client = reqwest::blocking::Client::new();
+    let mut request = client.post(url).body(body.to_string());
+
+    if let Some(headers) = headers {
+        request = request.headers(headers);
+    }
+
+    match request.send() {
         Ok(response) => match response.text() {
             Ok(text) => Ok(hcl::Value::String(text)),
             Err(e) => Err(format!("Failed to read response: {}", e)),
@@ -247,9 +304,16 @@ pub fn http_post(args: FuncArgs) -> Result<hcl::Value, String> {
 pub fn http_post_json(args: FuncArgs) -> Result<hcl::Value, String> {
     let url = args[0].as_str().unwrap();
     let json_body = args[1].to_string();
-    let client = reqwest::blocking::Client::new();
+    let headers = parse_headers(&args.get(2));
 
-    match client.post(url).header("Content-Type", "application/json").body(json_body).send() {
+    let client = reqwest::blocking::Client::new();
+    let mut request = client.post(url).header("Content-Type", "application/json").body(json_body);
+
+    if let Some(headers) = headers {
+        request = request.headers(headers);
+    }
+
+    match request.send() {
         Ok(response) => match response.text() {
             Ok(text) => Ok(hcl::Value::String(text)),
             Err(e) => Err(format!("Failed to read response: {}", e)),
@@ -261,9 +325,16 @@ pub fn http_post_json(args: FuncArgs) -> Result<hcl::Value, String> {
 pub fn http_put(args: FuncArgs) -> Result<hcl::Value, String> {
     let url = args[0].as_str().unwrap();
     let body = args[1].as_str().unwrap();
-    let client = reqwest::blocking::Client::new();
+    let headers = parse_headers(&args.get(2));
 
-    match client.put(url).body(body.to_string()).send() {
+    let client = reqwest::blocking::Client::new();
+    let mut request = client.put(url).body(body.to_string());
+
+    if let Some(headers) = headers {
+        request = request.headers(headers);
+    }
+
+    match request.send() {
         Ok(response) => match response.text() {
             Ok(text) => Ok(hcl::Value::String(text)),
             Err(e) => Err(format!("Failed to read response: {}", e)),

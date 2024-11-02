@@ -11,4 +11,6 @@ pub(crate) struct Config {
 pub(crate) struct Settings {
     pub(crate) listen: String,
     pub(crate) storage: PathBuf,
+    pub(crate) vault_url: String,
+    pub(crate) vault_token: String,
 }
