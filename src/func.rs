@@ -263,6 +263,16 @@ pub fn vault_kv(args: FuncArgs) -> Result<hcl::Value, String> {
     let config = crate::config::read();
     let value = args[0].as_str().unwrap();
 
+    let mut key = None;
+
+    if args.len() > 2 {
+        return Err("Too many arguments, expected at most 2".into());
+    }
+
+    if args.len() > 1 && args[1] != hcl::Value::Null {
+        key = Some(args[1].to_owned());
+    }
+
     let client = reqwest::blocking::Client::new();
     let request = client
         .get(format!("{}/v1/kv/data/{value}", config.settings.vault_url))
@@ -271,7 +281,38 @@ pub fn vault_kv(args: FuncArgs) -> Result<hcl::Value, String> {
     match request.send() {
         Ok(response) => match response.json::<hcl::Object<String, hcl::Value>>() {
             Ok(json) => match json.get("data") {
-                Some(data) => Ok(data.to_owned()),
+                Some(data) => {
+                    let key_value = match key {
+                        Some(key) => key,
+                        None => return Ok(data.to_owned()),
+                    };
+
+                    let key = match key_value.as_str() {
+                        Some(key) => key,
+                        None => return Ok(data.to_owned()),
+                    };
+
+                    let values = match data.as_object() {
+                        Some(values) => values.get("data"),
+                        None => return Ok(data.to_owned()),
+                    };
+
+                    let secret_map = match values {
+                        Some(secret) => secret.as_object(),
+                        None => return Ok(data.to_owned()),
+                    };
+
+                    let secret = match secret_map {
+                        Some(secret) => secret.get(key),
+                        None => return Ok(data.to_owned()),
+                    };
+
+                    if let Some(val) = secret {
+                        return Ok(val.to_owned());
+                    }
+
+                    Ok(hcl::Value::Object(secret_map.expect("Expected valid early returns").to_owned()))
+                }
                 None => Err("Unable to decode json".to_string()),
             },
             Err(e) => Err(format!("Failed to read response: {}", e)),

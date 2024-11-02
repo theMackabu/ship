@@ -97,7 +97,7 @@ lazy_lock! {
     static FN_MERGE: FuncDef = FuncDef::builder().variadic_param(ParamType::Object(Box::new(ParamType::Any))).build(func::merge);
     static FN_FILE: FuncDef = FuncDef::builder().param(ParamType::String).build(func::file);
     static FN_HTTP_GET: FuncDef = FuncDef::builder().param(ParamType::String).variadic_param(ParamType::Any).build(func::http_get);
-    static FN_VAULT_GET: FuncDef = FuncDef::builder().param(ParamType::String).build(func::vault_kv);
+    static FN_VAULT_GET: FuncDef = FuncDef::builder().param(ParamType::String).variadic_param(ParamType::Nullable(Box::new(ParamType::String))).build(func::vault_kv);
     static FN_HTTP_POST: FuncDef = FuncDef::builder().param(ParamType::String).param(ParamType::String).variadic_param(ParamType::Any).build(func::http_post);
     static FN_HTTP_POST_JSON: FuncDef = FuncDef::builder().param(ParamType::String).param(ParamType::Any).variadic_param(ParamType::Any).build(func::http_post_json);
     static FN_HTTP_PUT: FuncDef = FuncDef::builder().param(ParamType::String).param(ParamType::String).variadic_param(ParamType::Any).build(func::http_put);
