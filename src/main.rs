@@ -329,9 +329,9 @@ impl<'c> HclConverter<'c> {
         let mut value = self.eval()?;
 
         if let hcl::Value::Object(obj) = &mut value {
+            obj.shift_remove("locals");
             obj.shift_remove("env");
             obj.shift_remove("meta");
-            obj.shift_remove("locals");
         }
 
         Ok(value)
