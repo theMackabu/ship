@@ -1,4 +1,4 @@
-# Ship
+<p align="center"><img style="width: 300px;" src="https://github.com/theMackabu/ship/blob/master/.github/assets/ship.png?raw=true" /></p>
 
 Ship is a powerful configuration service that sails your HCL configurations to different formats (JSON, YAML, TOML) while providing a rich fleet of built-in functions for data transformation.
 
@@ -52,6 +52,15 @@ settings {
 
 ## API Usage
 
+> [!CAUTION]
+>
+> ### Security Notes
+>
+> - The service should be configured with appropriate access controls
+> - Vault token should be kept secure
+> - Consider network security when exposing HTTP endpoints
+> - File operations are restricted to the configured storage path
+
 ### Convert HCL File
 
 ```
@@ -101,10 +110,3 @@ To build and run the service:
 3. Run `cargo build` to compile
 4. Create a `config.hcl` file
 5. Run `cargo run` to start the service
-
-## Security Notes
-
-- The service should be configured with appropriate access controls
-- Vault token should be kept secure
-- Consider network security when exposing HTTP endpoints
-- File operations are restricted to the configured storage path
