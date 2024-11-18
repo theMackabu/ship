@@ -1,16 +1,13 @@
-#![recursion_limit = "256"]
-
 mod config;
-mod func;
+mod functions;
+mod macros;
 mod models;
 
-use macros_rs::{fmt::str, obj::lazy_lock};
-use std::{cell::RefCell, fs, path::PathBuf, rc::Rc, str::FromStr};
+use functions::Functions;
+use macros_rs::fmt::str;
+use std::{fs, path::PathBuf, str::FromStr};
 
-use hcl::eval::{Context, FuncDef, ParamType};
-use hcl::expr::FuncName;
 use hcl::Block;
-
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use serde_yaml_ng::Value as YamlValue;
@@ -18,24 +15,6 @@ use toml::Value as TomlValue;
 
 use tide::{utils::After, Error, Request, Response};
 use tide_tracing::TraceMiddleware;
-
-macro_rules! declare_fns {
-    ($ctx:expr, $($fn:expr => $name:expr),+ $(,)?) => {
-        $($ctx.borrow_mut().declare_func($name, $fn.to_owned());)+
-    };
-}
-
-macro_rules! name {
-    ($name:expr) => {
-        FuncName::new($name)
-    };
-    ($namespace:expr, $name:expr) => {
-        FuncName::new($name).with_namespace([$namespace])
-    };
-    ([$($ns:expr),+] => $name:expr) => {
-        FuncName::new($name).with_namespace(vec![$($ns),+])
-    };
-}
 
 #[derive(Deserialize)]
 struct Params {
@@ -70,183 +49,19 @@ pub struct HclConverter<'c> {
     data: String,
     file: Option<String>,
     export: Option<String>,
-    ctx: Rc<RefCell<Context<'c>>>,
-}
-
-lazy_lock! {
-    static FN_FORMAT: FuncDef = FuncDef::builder().variadic_param(ParamType::Any).build(func::format);
-    static FN_UPPER: FuncDef = FuncDef::builder().param(ParamType::String).build(func::upper);
-    static FN_LOWER: FuncDef = FuncDef::builder().param(ParamType::String).build(func::lower);
-    static FN_CONCAT: FuncDef = FuncDef::builder().variadic_param(ParamType::String).build(func::concat);
-    static FN_VEC: FuncDef = FuncDef::builder().variadic_param(ParamType::Any).build(func::vec);
-    static FN_LENGTH: FuncDef = FuncDef::builder().param(ParamType::Any).build(func::length);
-    static FN_RANGE: FuncDef = FuncDef::builder().param(ParamType::Number).param(ParamType::Number).build(func::range);
-    static FN_COMPACT: FuncDef = FuncDef::builder().param(ParamType::Object(Box::new(ParamType::Any))).build(func::compact);
-    static FN_TYPE_OF: FuncDef = FuncDef::builder().param(ParamType::Any).build(func::type_of);
-    static FN_REVERSE: FuncDef = FuncDef::builder().param(ParamType::Any).build(func::reverse);
-    static FN_SUM: FuncDef = FuncDef::builder().param(ParamType::Array(Box::new(ParamType::Any))).build(func::sum);
-    static FN_UNIQUE: FuncDef = FuncDef::builder().param(ParamType::Array(Box::new(ParamType::Any))).build(func::unique);
-    static FN_CONTAINS: FuncDef = FuncDef::builder().param(ParamType::Any).param(ParamType::Any).build(func::contains);
-    static FN_KEYS: FuncDef = FuncDef::builder().param(ParamType::Object(Box::new(ParamType::Any))).build(func::keys);
-    static FN_VALUES: FuncDef = FuncDef::builder().param(ParamType::Object(Box::new(ParamType::Any))).build(func::values);
-    static FN_SPLIT: FuncDef = FuncDef::builder().param(ParamType::String).param(ParamType::String).build(func::split);
-    static FN_JOIN: FuncDef = FuncDef::builder().param(ParamType::Array(Box::new(ParamType::Any))).param(ParamType::String).build(func::join);
-    static FN_MAX: FuncDef = FuncDef::builder().param(ParamType::Array(Box::new(ParamType::Any))).build(func::max);
-    static FN_MIN: FuncDef = FuncDef::builder().param(ParamType::Array(Box::new(ParamType::Any))).build(func::min);
-    static FN_FLATTEN: FuncDef = FuncDef::builder().param(ParamType::Array(Box::new(ParamType::Any))).build(func::flatten);
-    static FN_MERGE: FuncDef = FuncDef::builder().variadic_param(ParamType::Object(Box::new(ParamType::Any))).build(func::merge);
-    static FN_FILE: FuncDef = FuncDef::builder().param(ParamType::String).build(func::file);
-    static FN_HTTP_GET: FuncDef = FuncDef::builder().param(ParamType::String).variadic_param(ParamType::Any).build(func::http_get);
-    static FN_VAULT_GET: FuncDef = FuncDef::builder().param(ParamType::String).variadic_param(ParamType::Nullable(Box::new(ParamType::String))).build(func::vault_kv);
-    static FN_HTTP_POST: FuncDef = FuncDef::builder().param(ParamType::String).param(ParamType::String).variadic_param(ParamType::Any).build(func::http_post);
-    static FN_HTTP_POST_JSON: FuncDef = FuncDef::builder().param(ParamType::String).param(ParamType::Any).variadic_param(ParamType::Any).build(func::http_post_json);
-    static FN_HTTP_PUT: FuncDef = FuncDef::builder().param(ParamType::String).param(ParamType::String).variadic_param(ParamType::Any).build(func::http_put);
-    static FN_TRIMSPACE: FuncDef = FuncDef::builder().param(ParamType::String).build(func::trimspace);
-    static FN_TRIM: FuncDef = FuncDef::builder().param(ParamType::String).param(ParamType::String).build(func::trim);
-    static FN_TRIMPREFIX: FuncDef = FuncDef::builder().param(ParamType::String).param(ParamType::String).build(func::trimprefix);
-    static FN_TRIMSUFFIX: FuncDef = FuncDef::builder().param(ParamType::String).param(ParamType::String).build(func::trimsuffix);
-    static FN_ABS: FuncDef = FuncDef::builder().param(ParamType::Number).build(func::abs);
-    static FN_CEIL: FuncDef = FuncDef::builder().param(ParamType::Number).build(func::ceil);
-    static FN_FLOOR: FuncDef = FuncDef::builder().param(ParamType::Number).build(func::floor);
-    static FN_TIMESTAMP: FuncDef = FuncDef::builder().build(func::timestamp);
-    static FN_TIMEADD: FuncDef = FuncDef::builder().param(ParamType::Number).param(ParamType::String).build(func::timeadd);
-    static FN_FORMATDATE: FuncDef = FuncDef::builder().param(ParamType::String).param(ParamType::Number).build(func::formatdate);
-    static FN_BCRYPT: FuncDef = FuncDef::builder().param(ParamType::String).build(func::bcrypt_hash);
-    static FN_FILEMD5: FuncDef = FuncDef::builder().param(ParamType::String).build(func::filemd5);
-    static FN_FILESHA1: FuncDef = FuncDef::builder().param(ParamType::String).build(func::filesha1);
-    static FN_FILESHA256: FuncDef = FuncDef::builder().param(ParamType::String).build(func::filesha256);
-    static FN_FILESHA512: FuncDef = FuncDef::builder().param(ParamType::String).build(func::filesha512);
-    static FN_MD5: FuncDef = FuncDef::builder().param(ParamType::String).build(func::md5_hash);
-    static FN_SHA1: FuncDef = FuncDef::builder().param(ParamType::String).build(func::sha1_hash);
-    static FN_SHA256: FuncDef = FuncDef::builder().param(ParamType::String).build(func::sha256_hash);
-    static FN_SHA512: FuncDef = FuncDef::builder().param(ParamType::String).build(func::sha512_hash);
-    static FN_UUID: FuncDef = FuncDef::builder().build(func::uuid_gen);
-    static FN_UUIDV5: FuncDef = FuncDef::builder().param(ParamType::String).param(ParamType::String).build(func::uuidv5);
-    static FN_BASE64ENCODE: FuncDef = FuncDef::builder().param(ParamType::String).build(func::base64encode);
-    static FN_BASE64DECODE: FuncDef = FuncDef::builder().param(ParamType::String).build(func::base64decode);
-    static FN_JSONENCODE: FuncDef = FuncDef::builder().param(ParamType::Any).build(func::jsonencode);
-    static FN_JSONDECODE: FuncDef = FuncDef::builder().param(ParamType::String).build(func::jsondecode);
-    static FN_URLENCODE: FuncDef = FuncDef::builder().param(ParamType::String).build(func::urlencode);
-    static FN_URLDECODE: FuncDef = FuncDef::builder().param(ParamType::String).build(func::urldecode);
-    static FN_YAMLENCODE: FuncDef = FuncDef::builder().param(ParamType::Any).build(func::yamlencode);
-    static FN_YAMLDECODE: FuncDef = FuncDef::builder().param(ParamType::String).build(func::yamldecode);
-    static FN_TOSTRING: FuncDef = FuncDef::builder().param(ParamType::Any).build(func::tostring);
-    static FN_TONUMBER: FuncDef = FuncDef::builder().param(ParamType::Any).build(func::tonumber);
-    static FN_TOSET: FuncDef = FuncDef::builder().param(ParamType::Array(Box::new(ParamType::Any))).build(func::toset);
-    static FN_PARSEINT: FuncDef = FuncDef::builder().param(ParamType::String).build(func::parseint);
-    static FN_CIDRNETMASK: FuncDef = FuncDef::builder().param(ParamType::String).build(func::cidrnetmask);
-    static FN_CIDRRANGE: FuncDef = FuncDef::builder().param(ParamType::String).build(func::cidrrange);
-    static FN_CIDRHOST: FuncDef = FuncDef::builder().param(ParamType::String).param(ParamType::Number).build(func::cidrhost);
-    static FN_CIDRSUBNETS: FuncDef = FuncDef::builder().param(ParamType::String).param(ParamType::Number).build(func::cidrsubnets);
+    module: Functions<'c>,
 }
 
 impl<'c> HclConverter<'c> {
     pub fn new(input: &str) -> Result<Self, Error> {
+        let module = functions::init();
+
         let default = Self {
+            module,
             file: None,
             export: None,
             data: input.to_owned(),
-            ctx: Rc::new(RefCell::new(Context::new())),
         };
-
-        declare_fns!(default.ctx,
-            FN_VEC => "s",
-            FN_JOIN => "join",
-            FN_RANGE => "range",
-            FN_MERGE => "merge",
-            FN_SPLIT => "split",
-            FN_FORMAT => "format",
-            FN_CONCAT => "concat",
-            FN_LENGTH => "length",
-            FN_UNIQUE => "unique",
-            FN_COMPACT => "compact",
-            FN_TYPE_OF => "type_of",
-            FN_REVERSE => "reverse",
-            FN_FLATTEN => "flatten",
-            FN_CONTAINS => "contains"
-        );
-
-        declare_fns!(default.ctx,
-            FN_ABS => "abs",
-            FN_CEIL => "ceil",
-            FN_FLOOR => "floor",
-            FN_MAX => "max",
-            FN_MIN => "min",
-            FN_SUM => "sum",
-            FN_PARSEINT => "parseint"
-        );
-
-        declare_fns!(default.ctx,
-            FN_FILE => name!("fs", "read"),
-            FN_FILEMD5 => name!(["fs", "hash"] => "md5"),
-            FN_FILESHA1 => name!(["fs", "hash"] => "sha1"),
-            FN_FILESHA256 => name!(["fs", "hash"] => "sha256"),
-            FN_FILESHA512 => name!(["fs", "hash"] => "sha512")
-        );
-
-        declare_fns!(default.ctx,
-            FN_HTTP_GET => name!("http", "get"),
-            FN_VAULT_GET => name!("secret", "kv"),
-            FN_HTTP_POST => name!("http", "post"),
-            FN_HTTP_POST_JSON => name!("http", "post_json"),
-            FN_HTTP_PUT => name!("http", "put")
-        );
-
-        declare_fns!(default.ctx,
-            FN_KEYS => name!("map", "keys"),
-            FN_VALUES => name!("map", "values"),
-            FN_UPPER => name!("str", "upper"),
-            FN_LOWER => name!("str", "lower"),
-            FN_TRIM => name!("str", "trim"),
-            FN_TRIMSPACE => name!("str", "trimspace"),
-            FN_TRIMPREFIX => name!("str", "trimprefix"),
-            FN_TRIMSUFFIX => name!("str", "trimsuffix")
-        );
-
-        declare_fns!(default.ctx,
-            FN_TIMESTAMP => name!("date", "timestamp"),
-            FN_TIMEADD => name!("date", "timeadd"),
-            FN_FORMATDATE => name!("date", "format")
-        );
-
-        declare_fns!(default.ctx,
-            FN_BCRYPT => name!("hash", "bcrypt"),
-            FN_MD5 => name!("hash", "md5"),
-            FN_SHA1 => name!("hash", "sha1"),
-            FN_SHA256 => name!("hash", "sha256"),
-            FN_SHA512 => name!("hash", "sha512")
-        );
-
-        declare_fns!(default.ctx,
-           FN_UUID => "uuid",
-           FN_UUIDV5 => "uuidv5"
-        );
-
-        declare_fns!(default.ctx,
-           FN_VEC => "list",
-           FN_VEC => "tuple",
-           FN_TOSET => "set",
-           FN_TOSTRING => "string",
-           FN_TONUMBER => "number"
-        );
-
-        declare_fns!(default.ctx,
-           FN_BASE64ENCODE => name!("encode", "base64"),
-           FN_BASE64DECODE => name!("decode", "base64"),
-           FN_JSONENCODE => name!("encode", "json"),
-           FN_JSONDECODE => name!("decode", "json"),
-           FN_URLENCODE => name!("encode", "url"),
-           FN_URLDECODE => name!("decode", "url"),
-           FN_YAMLENCODE => name!("encode", "yaml"),
-           FN_YAMLDECODE => name!("decode", "yaml")
-        );
-
-        declare_fns!(default.ctx,
-           FN_CIDRSUBNETS => name!("cidr", "subnets"),
-           FN_CIDRNETMASK => name!("cidr", "netmask"),
-           FN_CIDRRANGE => name!("cidr", "range"),
-           FN_CIDRHOST => name!("cidr", "host")
-        );
 
         Ok(default)
     }
@@ -264,7 +79,7 @@ impl<'c> HclConverter<'c> {
         I: Into<hcl::Identifier>,
         T: Into<hcl::Value>,
     {
-        self.ctx.borrow_mut().declare_var(name.into(), value.into());
+        self.module.borrow_mut().declare_var(name.into(), value.into());
     }
 
     pub fn fetch_locals(&mut self) -> Result<(), Error> {
@@ -375,7 +190,7 @@ impl<'c> HclConverter<'c> {
         Ok(serde_json::to_string_pretty(&value)?)
     }
 
-    fn eval(&self) -> Result<hcl::Value, Error> { Ok(hcl::eval::from_str(&self.data, &self.ctx.borrow())?) }
+    fn eval(&self) -> Result<hcl::Value, Error> { Ok(hcl::eval::from_str(&self.data, &self.module.borrow())?) }
 
     fn result(&self) -> Result<hcl::Value, Error> {
         let mut value = self.eval()?;
