@@ -39,20 +39,23 @@ fn vault_kv(args: FuncArgs) -> Result<hcl::Value, String> {
     let config = crate::config::read();
     let value = args[0].as_str().unwrap();
 
-    let mut key = None;
+    let vault = match config.settings.vault {
+        Some(vault) => vault,
+        None => return Err("Vault not configured in server settings".into()),
+    };
 
     if args.len() > 2 {
         return Err("Too many arguments, expected at most 2".into());
     }
+
+    let mut key = None;
 
     if args.len() > 1 && args[1] != hcl::Value::Null {
         key = Some(args[1].to_owned());
     }
 
     let client = reqwest::blocking::Client::new();
-    let request = client
-        .get(format!("{}/v1/kv/data/{value}", config.settings.vault_url))
-        .header("X-Vault-Token", config.settings.vault_token);
+    let request = client.get(format!("{}/v1/kv/data/{value}", vault.url)).header("X-Vault-Token", vault.token);
 
     match request.send() {
         Ok(response) => match response.json::<hcl::Object<String, hcl::Value>>() {
