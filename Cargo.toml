@@ -1,7 +1,10 @@
 [package]
 name = "ship"
-version = "0.1.0"
+version = "0.3.1"
 edition = "2021"
+license = "MIT"
+repository = "https://github.com/themackabu/ship"
+description = "Sail your configuration files"
 
 [dependencies]
 tide = "0.16.0"
