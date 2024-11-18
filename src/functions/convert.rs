@@ -5,6 +5,7 @@ use std::cell::RefMut;
 
 pub fn init<'c>(mut ctx: RefMut<Context<'c>>) {
     declare_fns!(ctx, {
+        tovec => s(..Any),
         tovec => list(..Any),
         tovec => tuple(..Any),
         tostring => string(Any),

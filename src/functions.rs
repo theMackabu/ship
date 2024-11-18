@@ -2,10 +2,10 @@ mod cidr;
 mod convert;
 mod crypto;
 mod date;
+mod file;
+mod global;
 
 use hcl::eval::FuncArgs;
-use std::fs::{self, File};
-use std::io::Read;
 use std::str::FromStr;
 
 use md5::{Digest, Md5};
@@ -28,6 +28,8 @@ pub fn init<'c>() -> Functions<'c> {
     convert::init(ctx.borrow_mut());
     crypto::init(ctx.borrow_mut());
     date::init(ctx.borrow_mut());
+    file::init(ctx.borrow_mut());
+    global::init(ctx.borrow_mut());
 
     return ctx;
 }
@@ -53,107 +55,12 @@ fn parse_headers(headers_arg: &Option<&hcl::Value>) -> Option<HeaderMap> {
     }
 }
 
-pub fn concat(args: FuncArgs) -> Result<hcl::Value, String> {
-    let concatenated = args.iter().map(|arg| arg.as_str().unwrap()).collect::<Vec<&str>>().join("");
-
-    Ok(hcl::Value::from(concatenated))
-}
-
-pub fn vec(args: FuncArgs) -> Result<hcl::Value, String> { Ok(hcl::Value::Array(args.to_vec())) }
-
-pub fn length(args: FuncArgs) -> Result<hcl::Value, String> {
-    match &args[0] {
-        hcl::Value::Array(arr) => Ok(hcl::Value::Number(arr.len().into())),
-        hcl::Value::String(s) => Ok(hcl::Value::Number(s.len().into())),
-        hcl::Value::Object(map) => Ok(hcl::Value::Number(map.len().into())),
-        _ => Err("length() requires array, string or map argument".to_string()),
-    }
-}
-
-pub fn compact(args: FuncArgs) -> Result<hcl::Value, String> {
-    if let hcl::Value::Array(arr) = &args[0] {
-        let filtered: Vec<hcl::Value> = arr.iter().filter(|v| !matches!(v, hcl::Value::Null)).cloned().collect();
-        Ok(hcl::Value::Array(filtered))
-    } else {
-        Err("compact() requires array argument".to_string())
-    }
-}
-
-pub fn type_of(args: FuncArgs) -> Result<hcl::Value, String> {
-    let type_name = match &args[0] {
-        hcl::Value::Null => "null",
-        hcl::Value::Bool(_) => "boolean",
-        hcl::Value::Number(_) => "number",
-        hcl::Value::String(_) => "string",
-        hcl::Value::Array(_) => "array",
-        hcl::Value::Object(_) => "object",
-    };
-    Ok(hcl::Value::String(type_name.to_string()))
-}
-
-pub fn merge(args: FuncArgs) -> Result<hcl::Value, String> {
-    let mut result = hcl::Map::new();
-    for arg in args.iter() {
-        if let hcl::Value::Object(map) = arg {
-            result.extend(map.clone());
-        } else {
-            return Err("merge() requires map arguments".to_string());
-        }
-    }
-    Ok(hcl::Value::Object(result))
-}
-
-pub fn range(args: FuncArgs) -> Result<hcl::Value, String> {
-    let start = args[0].as_number().unwrap().as_i64().unwrap();
-    let end = args[1].as_number().unwrap().as_i64().unwrap();
-
-    let range_vec: Vec<hcl::Value> = (start..end).map(|n| hcl::Value::Number(n.into())).collect();
-
-    Ok(hcl::Value::Array(range_vec))
-}
-
-pub fn reverse(args: FuncArgs) -> Result<hcl::Value, String> {
-    match &args[0] {
-        hcl::Value::Array(arr) => {
-            let mut reversed = arr.clone();
-            reversed.reverse();
-            Ok(hcl::Value::Array(reversed))
-        }
-        hcl::Value::String(s) => Ok(hcl::Value::String(s.chars().rev().collect())),
-        _ => Err("reverse() requires array or string argument".to_string()),
-    }
-}
-
 pub fn sum(args: FuncArgs) -> Result<hcl::Value, String> {
     if let hcl::Value::Array(arr) = &args[0] {
         let sum = arr.iter().filter_map(|v| v.as_number()).fold(0.0, |acc, x| acc + x.as_f64().unwrap());
         Ok(hcl::Value::Number(hcl::Number::from_f64(sum).unwrap()))
     } else {
         Err("sum() requires array argument".to_string())
-    }
-}
-
-pub fn unique(args: FuncArgs) -> Result<hcl::Value, String> {
-    if let hcl::Value::Array(arr) = &args[0] {
-        let mut seen = std::collections::HashSet::new();
-        let unique: Vec<hcl::Value> = arr.iter().filter(|v| seen.insert(v.to_string())).cloned().collect();
-        Ok(hcl::Value::Array(unique))
-    } else {
-        Err("unique() requires array argument".to_string())
-    }
-}
-
-pub fn contains(args: FuncArgs) -> Result<hcl::Value, String> {
-    match &args[0] {
-        hcl::Value::Array(arr) => Ok(hcl::Value::Bool(arr.contains(&args[1]))),
-        hcl::Value::String(s) => {
-            if let hcl::Value::String(search) = &args[1] {
-                Ok(hcl::Value::Bool(s.contains(search)))
-            } else {
-                Err("Second argument must be string for string contains".to_string())
-            }
-        }
-        _ => Err("contains() requires array or string as first argument".to_string()),
     }
 }
 
@@ -172,30 +79,6 @@ pub fn values(args: FuncArgs) -> Result<hcl::Value, String> {
         Ok(hcl::Value::Array(values))
     } else {
         Err("values() requires map argument".to_string())
-    }
-}
-
-pub fn split(args: FuncArgs) -> Result<hcl::Value, String> {
-    if let (hcl::Value::String(s), hcl::Value::String(delimiter)) = (&args[0], &args[1]) {
-        let parts: Vec<hcl::Value> = s.split(delimiter).map(|part| hcl::Value::String(part.to_string())).collect();
-        Ok(hcl::Value::Array(parts))
-    } else {
-        Err("split() requires string and delimiter string arguments".to_string())
-    }
-}
-
-pub fn join(args: FuncArgs) -> Result<hcl::Value, String> {
-    if let (hcl::Value::Array(arr), hcl::Value::String(separator)) = (&args[0], &args[1]) {
-        let strings: Result<Vec<String>, String> = arr
-            .iter()
-            .map(|v| match v {
-                hcl::Value::String(s) => Ok(s.clone()),
-                _ => Ok(v.to_string()),
-            })
-            .collect();
-        Ok(hcl::Value::String(strings?.join(separator)))
-    } else {
-        Err("join() requires array and separator string arguments".to_string())
     }
 }
 
@@ -222,33 +105,6 @@ pub fn min(args: FuncArgs) -> Result<hcl::Value, String> {
             .ok_or_else(|| "min() requires non-empty array of numbers".to_string())
     } else {
         Err("min() requires array argument".to_string())
-    }
-}
-
-pub fn flatten(args: FuncArgs) -> Result<hcl::Value, String> {
-    pub fn flatten_inner(arr: &[hcl::Value], result: &mut Vec<hcl::Value>) {
-        for value in arr {
-            match value {
-                hcl::Value::Array(nested) => flatten_inner(nested, result),
-                other => result.push(other.clone()),
-            }
-        }
-    }
-
-    if let hcl::Value::Array(arr) = &args[0] {
-        let mut flattened = Vec::new();
-        flatten_inner(arr, &mut flattened);
-        Ok(hcl::Value::Array(flattened))
-    } else {
-        Err("flatten() requires array argument".to_string())
-    }
-}
-
-pub fn file(args: FuncArgs) -> Result<hcl::Value, String> {
-    let path = args[0].as_str().unwrap();
-    match fs::read_to_string(path) {
-        Ok(contents) => Ok(hcl::Value::String(contents)),
-        Err(e) => Err(format!("Failed to read file: {}", e)),
     }
 }
 
@@ -397,51 +253,6 @@ pub fn http_put(args: FuncArgs) -> Result<hcl::Value, String> {
     }
 }
 
-pub fn format(args: FuncArgs) -> Result<hcl::Value, String> {
-    if args.is_empty() {
-        return Err("format() requires at least one argument".to_string());
-    }
-
-    let format_str = args[0].as_str().unwrap();
-    let format_args = &args[1..];
-
-    let mut result = format_str.to_string();
-    let mut arg_index = 0;
-
-    while let Some(start) = result.find('%') {
-        if start + 1 >= result.len() {
-            return Err("Invalid format string: % at end of string".to_string());
-        }
-
-        if arg_index >= format_args.len() {
-            return Err("Not enough arguments for format string".to_string());
-        }
-
-        let format_type = result.chars().nth(start + 1).unwrap();
-        let replacement = match format_type {
-            's' => format_args[arg_index].to_string(),
-            'd' => match format_args[arg_index].as_number() {
-                Some(n) => format!("{}", n.as_f64().unwrap() as i64),
-                None => return Err("Expected number for %d format".to_string()),
-            },
-            'f' => match format_args[arg_index].as_number() {
-                Some(n) => format!("{}", n.as_f64().unwrap()),
-                None => return Err("Expected number for %f format".to_string()),
-            },
-            '%' => {
-                arg_index -= 1;
-                "%".to_string()
-            }
-            _ => return Err(format!("Unknown format specifier %{}", format_type)),
-        };
-
-        result.replace_range(start..start + 2, &replacement);
-        arg_index += 1;
-    }
-
-    Ok(hcl::Value::String(result))
-}
-
 pub fn upper(args: FuncArgs) -> Result<hcl::Value, String> {
     let input = args[0].as_str().unwrap();
     Ok(hcl::Value::String(input.to_uppercase()))
@@ -505,78 +316,6 @@ pub fn bcrypt_hash(args: FuncArgs) -> Result<hcl::Value, String> {
         Ok(hashed) => Ok(hcl::Value::String(hashed)),
         Err(e) => Err(format!("Bcrypt error: {}", e)),
     }
-}
-
-pub fn filemd5(args: FuncArgs) -> Result<hcl::Value, String> {
-    let path = args[0].as_str().unwrap();
-    let mut file = File::open(path).map_err(|e| format!("Failed to open file: {}", e))?;
-
-    let mut hasher = Md5::new();
-    let mut buffer = [0; 1024];
-
-    loop {
-        let count = file.read(&mut buffer).map_err(|e| format!("Failed to read file: {}", e))?;
-        if count == 0 {
-            break;
-        }
-        hasher.update(&buffer[..count]);
-    }
-
-    Ok(hcl::Value::String(format!("{:x}", hasher.finalize())))
-}
-
-pub fn filesha1(args: FuncArgs) -> Result<hcl::Value, String> {
-    let path = args[0].as_str().unwrap();
-    let mut file = File::open(path).map_err(|e| format!("Failed to open file: {}", e))?;
-
-    let mut hasher = Sha1::new();
-    let mut buffer = [0; 1024];
-
-    loop {
-        let count = file.read(&mut buffer).map_err(|e| format!("Failed to read file: {}", e))?;
-        if count == 0 {
-            break;
-        }
-        hasher.update(&buffer[..count]);
-    }
-
-    Ok(hcl::Value::String(format!("{:x}", hasher.finalize())))
-}
-
-pub fn filesha256(args: FuncArgs) -> Result<hcl::Value, String> {
-    let path = args[0].as_str().unwrap();
-    let mut file = File::open(path).map_err(|e| format!("Failed to open file: {}", e))?;
-
-    let mut hasher = Sha256::new();
-    let mut buffer = [0; 1024];
-
-    loop {
-        let count = file.read(&mut buffer).map_err(|e| format!("Failed to read file: {}", e))?;
-        if count == 0 {
-            break;
-        }
-        hasher.update(&buffer[..count]);
-    }
-
-    Ok(hcl::Value::String(format!("{:x}", hasher.finalize())))
-}
-
-pub fn filesha512(args: FuncArgs) -> Result<hcl::Value, String> {
-    let path = args[0].as_str().unwrap();
-    let mut file = File::open(path).map_err(|e| format!("Failed to open file: {}", e))?;
-
-    let mut hasher = Sha512::new();
-    let mut buffer = [0; 1024];
-
-    loop {
-        let count = file.read(&mut buffer).map_err(|e| format!("Failed to read file: {}", e))?;
-        if count == 0 {
-            break;
-        }
-        hasher.update(&buffer[..count]);
-    }
-
-    Ok(hcl::Value::String(format!("{:x}", hasher.finalize())))
 }
 
 pub fn md5_hash(args: FuncArgs) -> Result<hcl::Value, String> {

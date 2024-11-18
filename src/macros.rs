@@ -3,6 +3,9 @@ macro_rules! declare_fns {
     (@param_type Array) => {
         hcl::eval::ParamType::Array(Box::new(hcl::eval::ParamType::Any))
     };
+    (@param_type Object) => {
+        hcl::eval::ParamType::Object(Box::new(hcl::eval::ParamType::Any))
+    };
     (@param_type $param:ident) => {
         hcl::eval::ParamType::$param
     };
